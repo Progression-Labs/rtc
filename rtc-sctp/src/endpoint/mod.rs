@@ -145,6 +145,21 @@ impl Endpoint {
             }
         };
 
+        // An INIT matching no association while one is already being opened is a simultaneous
+        // open (RFC 4960 §5.2.1): both peers sent INIT. A WebRTC transport carries exactly one
+        // association, so the datagram goes to that one, whose state machine answers it in
+        // COOKIE-WAIT, instead of starting a second association beside it.
+        let known_ch = known_ch.or_else(|| {
+            if partial_decode.first_chunk_type == CT_INIT && self.associations.len() == 1 {
+                self.associations
+                    .iter()
+                    .next()
+                    .map(|(index, _)| AssociationHandle(index))
+            } else {
+                None
+            }
+        });
+
         if let Some(ch) = known_ch {
             return Some((
                 ch,

@@ -33,6 +33,9 @@ pub(crate) struct SctpTransport {
     // SCTPTransportState doesn't have an enum to distinguish between New/Connecting
     // so we need a dedicated field
     pub(crate) is_started: bool,
+    // Set by the SCTP handler when the DTLS handshake completes, so a transport negotiated after
+    // that (DataChannels added to a media session) still knows it may send its INIT.
+    pub(crate) dtls_complete: bool,
 
     // The *configured* ceiling from SettingEngine — an input to the negotiation below, not the
     // value W3C `maxMessageSize` reports. See `negotiated_max_message_size`.
@@ -70,6 +73,7 @@ impl SctpTransport {
             sctp_associations: HashMap::new(),
 
             is_started: false,
+            dtls_complete: false,
             max_message_size,
             negotiated_max_message_size: None,
             max_receive_buffer_size,
@@ -187,21 +191,19 @@ impl SctpTransport {
         }
         //TODO: add remote_port support
 
+        // RFC 8831 §6: either peer may initiate the SCTP association, and in practice both do (a
+        // browser and Cloudflare's Realtime SFU send INIT whatever their DTLS role). So the endpoint
+        // always accepts the peer's INIT, and in the DTLS client role it also sends its own once the
+        // DTLS handshake is complete (`SctpHandler::connect_if_ready`), which may already be the
+        // case when the application m-line is negotiated after the media.
+        self.sctp_endpoint = Some(::sctp::Endpoint::new(
+            TransportContext::default().local_addr, // placeholder; rewritten per-transmit by the ICE handler
+            TransportProtocol::UDP, // placeholder; rewritten per-transmit by the ICE handler
+            sctp_endpoint_config.into(),
+            Some(::sctp::ServerConfig::new(sctp_transport_config.clone()).into()),
+        ));
         if dtls_role == RTCDtlsRole::Client {
-            self.sctp_endpoint = Some(sctp::Endpoint::new(
-                TransportContext::default().local_addr, // placeholder; rewritten per-transmit by the ICE handler
-                TransportProtocol::UDP, // placeholder; rewritten per-transmit by the ICE handler
-                sctp_endpoint_config.into(),
-                None,
-            ));
             self.sctp_transport_config = Some(sctp_transport_config);
-        } else {
-            self.sctp_endpoint = Some(::sctp::Endpoint::new(
-                TransportContext::default().local_addr, // placeholder; rewritten per-transmit by the ICE handler
-                TransportProtocol::UDP, // placeholder; rewritten per-transmit by the ICE handler
-                sctp_endpoint_config.into(),
-                Some(::sctp::ServerConfig::new(sctp_transport_config).into()),
-            ));
         }
 
         Ok(())

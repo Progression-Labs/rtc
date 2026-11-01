@@ -678,6 +678,11 @@ impl<'a>
     }
 
     fn poll_write(&mut self) -> Option<Self::Wout> {
+        // The SCTP transport may have been negotiated after the DTLS handshake completed (a
+        // renegotiation adding DataChannels); then this is where our INIT gets sent.
+        if let Err(e) = self.connect_if_ready(self.ctx.now) {
+            warn!("sctp connect: {e}");
+        }
         // Batch-drain: run the single deferred transmit flush for this event-loop
         // iteration before serving queued outbound.
         if self.ctx.flush_dirty || self.ctx.abort_requested {
@@ -701,35 +706,8 @@ impl<'a>
         let dtls_complete = matches!(&evt.event, RTCEventInternal::DTLSHandshakeComplete(_, _));
         if dtls_complete {
             debug!("sctp recv dtls handshake complete");
-
-            if let Some(sctp_transport_config) =
-                self.ctx.sctp_transport.sctp_transport_config.clone()
-            {
-                let (sctp_endpoint, sctp_associations) = (
-                    self.ctx
-                        .sctp_transport
-                        .sctp_endpoint
-                        .as_mut()
-                        .ok_or(Error::ErrSCTPNotEstablished)?,
-                    &mut self.ctx.sctp_transport.sctp_associations,
-                );
-
-                debug!("sctp endpoint initiates connection for dtls client role");
-                let (ch, conn) = sctp_endpoint
-                    .connect(
-                        now,
-                        ClientConfig::new(sctp_transport_config),
-                        TransportContext::default().peer_addr,
-                    )
-                    .map_err(|e| Error::Other(e.to_string()))?;
-
-                sctp_associations.insert(ch, conn);
-
-                // `connect` queued the client INIT. Mark dirty so poll_write emits
-                // it at the next flush instead of waiting for a later handle_* (the
-                // deferred flush is now the only transmit path).
-                self.ctx.flush_dirty = true;
-            }
+            self.ctx.sctp_transport.dtls_complete = true;
+            self.connect_if_ready(now)?;
         }
 
         // The peer closed the DTLS transport the associations run over, so they are over too.
@@ -849,6 +827,45 @@ fn split_transmit(transmit: TransportMessage<Payload>) -> Vec<TransportMessage<P
     }
 
     transmits
+}
+
+impl<'a> SctpHandler<'a> {
+    /// In the DTLS client role, sends our INIT once both hold: the DTLS handshake is complete and
+    /// the SCTP transport is negotiated (`SctpTransport::start`). Either can come second: DTLS
+    /// finishes after an offer that already carried the application m-line, or the m-line arrives
+    /// in a renegotiation while DTLS has been up for a while. Does nothing once an association
+    /// exists, ours or one the peer's INIT opened.
+    fn connect_if_ready(&mut self, now: Instant) -> Result<()> {
+        if !self.ctx.sctp_transport.dtls_complete
+            || !self.ctx.sctp_transport.sctp_associations.is_empty()
+        {
+            return Ok(());
+        }
+        let Some(sctp_transport_config) = self.ctx.sctp_transport.sctp_transport_config.take()
+        else {
+            return Ok(());
+        };
+        let (sctp_endpoint, sctp_associations) = (
+            self.ctx
+                .sctp_transport
+                .sctp_endpoint
+                .as_mut()
+                .ok_or(Error::ErrSCTPNotEstablished)?,
+            &mut self.ctx.sctp_transport.sctp_associations,
+        );
+        debug!("sctp endpoint initiates connection for dtls client role");
+        let (ch, conn) = sctp_endpoint
+            .connect(
+                now,
+                ClientConfig::new(sctp_transport_config),
+                TransportContext::default().peer_addr,
+            )
+            .map_err(|e| Error::Other(e.to_string()))?;
+        sctp_associations.insert(ch, conn);
+        // `connect` queued the client INIT. Mark dirty so poll_write emits it at the next flush.
+        self.ctx.flush_dirty = true;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
