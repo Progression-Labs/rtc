@@ -252,6 +252,9 @@ impl DtlsTransport {
                 .with_cipher_suites(self.dtls_cipher_suites.clone())
                 .with_client_auth(ClientAuthType::RequireAnyClientCert)
                 .with_insecure_skip_verify(true)
+                // The peer is verified by its SDP fingerprint (above), never by name; set so the
+                // client does not warn that it has no remote address to take one from.
+                .with_server_name("localhost".to_owned())
                 .with_insecure_verification(self.allow_insecure_verification_algorithm)
                 .with_verify_peer_certificate(verify_peer_certificate)
                 .with_extended_master_secret(::dtls::config::ExtendedMasterSecretType::Require)

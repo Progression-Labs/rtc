@@ -68,10 +68,13 @@ impl<'a>
                         ))),
                     });
                 } else {
-                    return Err(Error::Other(format!(
-                        "remote_srtp_context is not set yet for rtcp_packet {:?}",
+                    // The peer finished its DTLS handshake first and is already sending
+                    // media: dropped, as any endpoint does until the keys are derived.
+                    // Expected at every connection's start, so not an error.
+                    debug!(
+                        "dropped an early rtcp packet from {:?}: remote_srtp_context is not set yet",
                         msg.transport.peer_addr
-                    )));
+                    );
                 }
             } else {
                 if let Some(context) = self.ctx.remote_srtp_context.as_mut() {
@@ -86,10 +89,13 @@ impl<'a>
                         ))),
                     });
                 } else {
-                    return Err(Error::Other(format!(
-                        "remote_srtp_context is not set yet for rtp_packet {:?}",
+                    // The peer finished its DTLS handshake first and is already sending
+                    // media: dropped, as any endpoint does until the keys are derived.
+                    // Expected at every connection's start, so not an error.
+                    debug!(
+                        "dropped an early rtp packet from {:?}: remote_srtp_context is not set yet",
                         msg.transport.peer_addr
-                    )));
+                    );
                 }
             }
         } else {
